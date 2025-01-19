@@ -1,7 +1,7 @@
 import os
 
 # root path of project 
-root_path = r"C:\Users\Bahaeddine\Desktop\TUHH\Semester 4\picking_process - Copy"
+root_path = ""
 
 
 # Clamp pcds paths
