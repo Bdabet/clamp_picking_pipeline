@@ -50,3 +50,21 @@ Requirements
     PyTorch
     Zivid SDK
     NumPy, SciPy
+
+
+Instructions for Setting Up and Running the Pipeline
+
+    Download Required Files:
+        Download the necessary files from the provided link.
+
+    Place Files in the Project Folder:
+        Insert the entire downloaded folder into the main root directory of the project, which should be located at \picking_pipeline.
+
+    Update Configuration Path:
+        Open config.py and set the root_path variable to the actual path of your project root directory. This ensures the pipeline uses the correct directory structure.
+
+    Prepare Zivid Camera Scene for Processing:
+        To run the pipeline with a scene captured using a Zivid camera (in .zdf format):
+            Place the .zdf file inside the \files\zdf_files directory.
+            Open main.py and locate the variable captured_scene_name.
+            Change the value of captured_scene_name to match the name of the .zdf file without the prefix. For example, if the file is scene_001.zdf, set captured_scene_name = "scene_001".
