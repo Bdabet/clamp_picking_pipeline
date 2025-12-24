@@ -1,4 +1,4 @@
-This repository contains the complete pipeline for segmentation, pose estimation, and scene analysis of clamps in cluttered environments, developed as part of my prject work.
+This repository contains the complete pipeline for segmentation, pose estimation, and scene analysis of clamps in cluttered environments, developed as part of my project work.
 
 Clamp Segmentation and Scene Analysis Pipeline
 
