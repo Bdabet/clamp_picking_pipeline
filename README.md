@@ -4,6 +4,10 @@ Clamp Segmentation and Scene Analysis Pipeline
 
 This repository contains the complete pipeline for segmentation, pose estimation, and scene analysis of clamps in cluttered environments, developed as part of my project work.
 
+## C++ Reimplementation
+
+➡️ A C++ implementation of this project is available in the `cpp` branch.
+
 Key Features
 1. Segmentation of Clamps
 
