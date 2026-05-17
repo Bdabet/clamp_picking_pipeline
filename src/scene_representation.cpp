@@ -200,3 +200,270 @@ Eigen::VectorXd extract_pose_from_transformation(const Eigen::Matrix4d& matrix,
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Clamp class
+// ---------------------------------------------------------------------------
+
+class Clamp {
+public:
+    // -----------------------------------------------------------------------
+    // Static attributes
+    // -----------------------------------------------------------------------
+    static int number_of_clamps;
+    // predefined clamp centers 
+    static const std::map<std::string, std::vector<double>> CLAMP_CENTERS;
+
+    // -----------------------------------------------------------------------
+    // Instance attributes
+    // -----------------------------------------------------------------------
+
+    // basic attributes
+    std::string clamp_size;           // "s", "m", or "b"
+    std::string clamp_orientation;    // "h" or "v"
+    int clamp_number;
+    std::string clamp_color;          
+
+    // transformation and pose
+    Eigen::Matrix4d clamp_transformation;
+    Eigen::VectorXd clamp_pose;       // 6D vector [x, y, z, roll, pitch, yaw]
+
+    // clamp center
+    std::vector<double> clamp_center;                          
+    std::shared_ptr<open3d::geometry::PointCloud> clamp_center_pcd;
+
+    // point clouds 
+    std::shared_ptr<open3d::geometry::PointCloud> clamp_pcd;
+    std::shared_ptr<open3d::geometry::PointCloud> bounding_volume_pcd;
+    std::shared_ptr<open3d::geometry::PointCloud> bounding_box_pcd;
+    std::shared_ptr<open3d::geometry::PointCloud> bounding_box_extended_pcd;
+    std::shared_ptr<open3d::geometry::PointCloud> clamp_curve_pcd;
+
+    // json data 
+    nlohmann::json h_grasping_regions;
+    nlohmann::json v_grasping_regions;
+    nlohmann::json grasping_axis_rotations;
+    nlohmann::json grasping_points;
+    nlohmann::json grasping_points_angles;
+
+
+
+    // -----------------------------------------------------------------------
+    // Constructor 
+    // -----------------------------------------------------------------------
+
+    Clamp(const std::string& size,
+          std::optional<Eigen::VectorXd> pose = std::nullopt,
+          std::optional<Eigen::Matrix4d> combined_transformation = std::nullopt) {
+
+        // must provide either pose or transformation
+        if (!pose.has_value() && !combined_transformation.has_value()) {
+            throw std::invalid_argument("Either pose or transformation must be provided.");
+        }
+
+        // set clamp size
+        clamp_size = size;
+
+        // equivalent to Python's if/elif block
+        if (combined_transformation.has_value()) {
+            clamp_transformation = combined_transformation.value();
+            clamp_pose = extract_pose_from_transformation(clamp_transformation);
+        } 
+        else if (pose.has_value()) {
+            Eigen::Vector3d position = pose.value().head<3>();
+            Eigen::Vector3d rpy      = pose.value().tail<3>();
+            clamp_transformation     = pose_to_transform_matrix_rpy(position, rpy);
+            clamp_pose               = pose.value();
+        }
+
+        // find clamp orientation
+        clamp_orientation = find_clamp_orientation();
+
+        // increment number of clamps
+        number_of_clamps++;
+        clamp_number = number_of_clamps;
+
+        // load point clouds from disk
+        // equivalent to: self.clamp_pcd = o3d.io.read_point_cloud(...)
+        clamp_pcd                = std::make_shared<open3d::geometry::PointCloud>();
+        bounding_volume_pcd      = std::make_shared<open3d::geometry::PointCloud>();
+        bounding_box_pcd         = std::make_shared<open3d::geometry::PointCloud>();
+        bounding_box_extended_pcd= std::make_shared<open3d::geometry::PointCloud>();
+        clamp_curve_pcd          = std::make_shared<open3d::geometry::PointCloud>();
+
+        open3d::io::ReadPointCloud(get_pcd_path("clamp",                  size), *clamp_pcd);
+        open3d::io::ReadPointCloud(get_pcd_path("bounding_box",           size), *bounding_volume_pcd);
+        open3d::io::ReadPointCloud(get_pcd_path("bounding_box_extended",  size), *bounding_box_extended_pcd);
+        open3d::io::ReadPointCloud(get_pcd_path("inner_bounding_volume",  size), *bounding_volume_pcd);
+        open3d::io::ReadPointCloud(get_pcd_path("clamp_curve",            size), *clamp_curve_pcd);
+
+        // load json files
+        h_grasping_regions     = get_json_path("clamp_grasping_regions_h", size);
+        v_grasping_regions     = get_json_path("clamp_grasping_regions_v", size);
+        grasping_axis_rotations= get_json_path("axis_rotations",           size);
+        grasping_points        = get_json_path("grasping_points",          size);
+        grasping_points_angles = get_json_path("grasping_points_angles",   size);
+
+        // initialize clamp center
+        clamp_center_pcd = initialize_center();
+        clamp_center     = CLAMP_CENTERS.at(size);  
+        clamp_color      = "";                      
+    }
+
+    private:
+
+    // -----------------------------------------------------------------------
+    // internal helpers
+    // -----------------------------------------------------------------------
+
+    std::string find_clamp_orientation() {
+
+        std::string orientation = "h";  // default
+
+        // two iterations for x and y axes — same as Python's for idx in range(2)
+        for (int idx = 0; idx < 2; idx++) {
+
+            // extract the angle for x (idx=0) or y (idx=1) axis, fmod => float remainder
+            double axis_angle = std::fmod(std::abs(clamp_pose(idx + 3)), 360.0);
+
+
+            if ((axis_angle >= 315 && axis_angle <= 360) ||
+                (axis_angle >=   0 && axis_angle <=  45) ||
+                (axis_angle >= 135 && axis_angle <= 225)) {
+                orientation = "h";
+            } 
+            else {
+                orientation = "v";
+                break;  
+            }
+        }
+
+        return orientation;
+    }
+
+
+    std::shared_ptr<open3d::geometry::PointCloud> initialize_center() {
+
+        // check size is valid
+        if (CLAMP_CENTERS.find(clamp_size) == CLAMP_CENTERS.end()) {
+            throw std::invalid_argument("Invalid clamp size: " + clamp_size);
+        }
+
+
+        // create a new point cloud with just the center point
+        auto center_pcd = std::make_shared<open3d::geometry::PointCloud>();
+
+        // get the center coordinates for this clamp size
+        std::vector<double> center = CLAMP_CENTERS.at(clamp_size);
+
+        // add the center point to the point cloud
+        center_pcd->points_.push_back(Eigen::Vector3d(center[0], center[1], center[2]));
+
+
+        return center_pcd;
+    }
+
+
+    public:
+    // -----------------------------------------------------------------------
+    // public fucntions
+    // -----------------------------------------------------------------------
+
+    void add_clamp_to_representation() {
+
+
+        if (clamp_transformation.isZero()) {
+            std::cerr << "Transformation matrix is zero, cannot add clamp\n";
+            return;
+        }
+
+
+        // transform all point clouds
+        clamp_pcd->Transform(clamp_transformation);
+        clamp_curve_pcd->Transform(clamp_transformation);
+        bounding_volume_pcd->Transform(clamp_transformation);
+        bounding_box_pcd->Transform(clamp_transformation);
+        bounding_box_extended_pcd->Transform(clamp_transformation);
+        clamp_center_pcd->Transform(clamp_transformation);
+
+        // transform clamp center coordinate
+        Eigen::Vector3d center_eigen(clamp_center[0], clamp_center[1], clamp_center[2]);
+        Eigen::Vector3d transformed_center = transform_xyz_coordinate(clamp_transformation, center_eigen);
+        clamp_center = {transformed_center.x(), transformed_center.y(), transformed_center.z()};
+
+        // transform h_grasping_regions
+
+        for (auto& [region_name, region_points] : h_grasping_regions.items()) {
+
+
+            std::vector<Eigen::Vector3d> transformed_points;
+
+            for (auto& coordinate : region_points) {
+                Eigen::Vector3d coord(coordinate[0], coordinate[1], coordinate[2]);
+                Eigen::Vector3d new_coord = transform_xyz_coordinate(clamp_transformation, coord);
+                transformed_points.push_back(new_coord);
+            }
+
+            // update the json with transformed coordinates
+            region_points = nlohmann::json::array();
+            for (const auto& p : transformed_points) {
+                region_points.push_back({p.x(), p.y(), p.z()});
+            }
+        }
+
+        // same for v_grasping_regions
+        for (auto& [region_name, region_points] : v_grasping_regions.items()) {
+            std::vector<Eigen::Vector3d> transformed_points;
+
+            for (auto& coordinate : region_points) {
+                Eigen::Vector3d coord(coordinate[0], coordinate[1], coordinate[2]);
+                Eigen::Vector3d new_coord = transform_xyz_coordinate(clamp_transformation, coord);
+                transformed_points.push_back(new_coord);
+            }
+
+            region_points = nlohmann::json::array();
+            for (const auto& p : transformed_points) {
+                region_points.push_back({p.x(), p.y(), p.z()});
+            }
+        }
+
+        // transform grasping points
+        for (auto& [point_name, point] : grasping_points.items()) {
+            Eigen::Vector3d coord(point[0], point[1], point[2]);
+            Eigen::Vector3d new_coord = transform_xyz_coordinate(clamp_transformation, coord);
+            point = {new_coord.x(), new_coord.y(), new_coord.z()};
+        }
+
+        // add random color to clamp
+
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dist(50, 100);
+
+        double r = dist(gen) / 100.0;
+        double g = dist(gen) / 100.0;
+        double b = dist(gen) / 100.0;
+
+        // set uniform color on clamp pcd
+
+        clamp_pcd->PaintUniformColor(Eigen::Vector3d(r, g, b));
+
+
+        // add clamp to scene_pcd
+        *scene_pcd += *clamp_pcd;
+
+    }
+
+
+};
+
+// ---------------------------------------------------------------------------
+// Static members of Clamps class
+// ---------------------------------------------------------------------------
+int Clamp::number_of_clamps = 0;
+
+const std::map<std::string, std::vector<double>> Clamp::CLAMP_CENTERS = {
+    {"s", {5.74323225/1000, 13.14538544/1000, 0.25742388/1000}},
+    {"m", {11.8132830/1000, 19.5173681/1000,  8.585e-06/1000}},
+    {"b", {20.1405449/1000, 27.1667296/1000,  2.7179718e-05/1000}}
+};
